@@ -25,10 +25,6 @@ jobs:
             unzip xz-utils zip \
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
 
-      - name: Setup KernelSU
-        run: |
-          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
-
       - name: Resolve defconfig
         id: defconfig
         shell: bash
