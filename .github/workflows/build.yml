@@ -68,7 +68,7 @@ jobs:
           echo "Usando defconfig: $FOUND"
           echo "value=$FOUND" >> "$GITHUB_OUTPUT"
 
-      - name: Build
+      - name: Build kernel
         shell: bash
         run: |
           set -euo pipefail
@@ -76,19 +76,66 @@ jobs:
           export ARCH=arm64
           export SUBARCH=arm64
 
-          # Android kernel build with LLVM/Clang
+          # Android kernel + clang/llvm
           export LLVM=1
           export LLVM_IAS=1
           export CC=clang
           export CLANG_TRIPLE=aarch64-linux-gnu-
 
-          # Needed for 32-bit compat vDSO/tools
+          # compat vDSO/tooling
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
 
           mkdir -p out
-          make O=out ARCH=$ARCH ${{ steps.defconfig.outputs.value }}
+          make O=out ARCH=$ARCH "${{ steps.defconfig.outputs.value }}"
           make -j"$(nproc)" O=out ARCH=$ARCH
+
+      - name: Create Image.gz-dtb
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMG_GZ="out/arch/arm64/boot/Image.gz"
+          IMG="out/arch/arm64/boot/Image"
+          DTB_SINGLE="out/arch/arm64/boot/dtb"
+          DTB_DIR="out/arch/arm64/boot/dts"
+
+          if [ -f "$IMG_GZ" ] && [ -f "$DTB_SINGLE" ]; then
+            cat "$IMG_GZ" "$DTB_SINGLE" > out/arch/arm64/boot/Image.gz-dtb
+            echo "Created Image.gz-dtb from Image.gz + dtb"
+          elif [ -f "$IMG" ] && [ -f "$DTB_SINGLE" ]; then
+            cat "$IMG" "$DTB_SINGLE" > out/arch/arm64/boot/Image-dtb
+            echo "Created Image-dtb from Image + dtb"
+          else
+            echo "No single dtb at $DTB_SINGLE; skipping concat (DTBs may be split in $DTB_DIR)"
+          fi
+
+      - name: Build AnyKernel3 zip
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+
+          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            cp -f out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          elif [ -f out/arch/arm64/boot/Image-dtb ]; then
+            cp -f out/arch/arm64/boot/Image-dtb AnyKernel3/Image.gz-dtb
+          elif [ -f out/arch/arm64/boot/Image.gz ]; then
+            cp -f out/arch/arm64/boot/Image.gz AnyKernel3/
+          elif [ -f out/arch/arm64/boot/Image ]; then
+            cp -f out/arch/arm64/boot/Image AnyKernel3/
+          else
+            echo "Kernel image not found"
+            exit 1
+          fi
+
+          # opcional: se houver dtbo.img, leva junto
+          if [ -f out/arch/arm64/boot/dtbo.img ]; then
+            cp -f out/arch/arm64/boot/dtbo.img AnyKernel3/ || true
+          fi
+
+          (cd AnyKernel3 && zip -r9 ../kernel-anykernel3.zip . -x ".git/*" "README.md" "*placeholder")
 
       - name: Pack artifacts
         uses: actions/upload-artifact@v4
@@ -96,6 +143,8 @@ jobs:
           name: kernel-out
           path: |
             out/arch/arm64/boot/Image*
+            out/arch/arm64/boot/dtb
             out/arch/arm64/boot/dts/**/*.dtb
             out/arch/arm64/boot/dtbo.img
+            kernel-anykernel3.zip
           if-no-files-found: warn
