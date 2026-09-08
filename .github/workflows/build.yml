@@ -1,77 +1,92 @@
-name: Build Mojito Kernel
+name: Build Kernel
 
 on:
   workflow_dispatch:
+  push:
+    branches: [ main, master ]
+  pull_request:
 
 jobs:
   build:
-    name: Build Kernel
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Kernel
+      - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Set up Build Environment
+      - name: Install deps
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential \
-            bc \
-            bison \
-            flex \
-            libssl-dev \
-            libelf-dev \
-            clang \
-            lld \
-            llvm \
-            zip
+            bc bison build-essential ccache curl flex git kmod libelf-dev \
+            libssl-dev libncurses5-dev libncursesw5-dev python3 rsync \
+            unzip xz-utils zip
 
-      - name: Download Toolchain
-        run: |
-          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git clang
-
-      - name: Build Kernel
+      - name: Setup KernelSU
         run: |
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
 
-          export PATH="${GITHUB_WORKSPACE}/clang/bin:$PATH"
-
-          MAKE_ARGS="\
-            ARCH=arm64 \
-            SUBARCH=arm64 \
-            CC=clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip"
-
-          make O=out $MAKE_ARGS vendor/mojito_defconfig
-          make -j$(nproc) O=out $MAKE_ARGS
-
-      - name: Package AnyKernel3
+      - name: Resolve defconfig
+        id: defconfig
+        shell: bash
         run: |
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
+          set -euo pipefail
 
-          sed -i 's/^device.name1=.*/device.name1=mojito/' anykernel/anykernel.sh
-          sed -i 's/^device.name2=.*/device.name2=sunny/' anykernel/anykernel.sh
+          # 1) Tenta o que você estava usando
+          CANDIDATES=(
+            "vendor/mojito_defconfig"
+            "mojito_defconfig"
+            "vendor/xiaomi/mojito_defconfig"
+          )
 
-          sed -i 's|^BLOCK=.*|BLOCK=auto;|' anykernel/anykernel.sh
-          sed -i 's|^IS_SLOT_DEVICE=.*|IS_SLOT_DEVICE=auto;|' anykernel/anykernel.sh
+          FOUND=""
+          for c in "${CANDIDATES[@]}"; do
+            if [ -f "arch/arm64/configs/${c}" ]; then
+              FOUND="$c"
+              break
+            fi
+          done
 
-          cp out/arch/arm64/boot/Image.gz-dtb anykernel/
+          # 2) Fallback: procura qualquer *mojito*_defconfig
+          if [ -z "$FOUND" ]; then
+            MATCH="$(find arch/arm64/configs -type f -name '*mojito*_defconfig' | head -n1 || true)"
+            if [ -n "$MATCH" ]; then
+              FOUND="${MATCH#arch/arm64/configs/}"
+            fi
+          fi
 
-          cd anykernel
-          zip -r9 ../mojito-kernel.zip \
-            * \
-            -x .git README.md _placeholder
+          # 3) Último fallback: primeiro *_defconfig
+          if [ -z "$FOUND" ]; then
+            MATCH="$(find arch/arm64/configs -type f -name '*_defconfig' | head -n1 || true)"
+            if [ -n "$MATCH" ]; then
+              FOUND="${MATCH#arch/arm64/configs/}"
+            fi
+          fi
 
-      - name: Upload Kernel Zip
+          if [ -z "$FOUND" ]; then
+            echo "Nenhum defconfig encontrado em arch/arm64/configs"
+            exit 1
+          fi
+
+          echo "Usando defconfig: $FOUND"
+          echo "value=$FOUND" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          make O=out ARCH=arm64 ${{ steps.defconfig.outputs.value }}
+          make -j"$(nproc)" O=out ARCH=arm64
+
+      - name: Pack artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Mojito-Kernel
-          path: mojito-kernel.zip
+          name: kernel-out
+          path: |
+            out/arch/arm64/boot/Image*
+            out/arch/arm64/boot/dts/**/*.dtb
+            out/arch/arm64/boot/dtbo.img
+          if-no-files-found: warn
