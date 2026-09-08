@@ -1,0 +1,77 @@
+name: Build Mojito Kernel
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Kernel
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout Kernel
+        uses: actions/checkout@v4
+
+      - name: Set up Build Environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            bc \
+            bison \
+            flex \
+            libssl-dev \
+            libelf-dev \
+            clang \
+            lld \
+            llvm \
+            zip
+
+      - name: Download Toolchain
+        run: |
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git clang
+
+      - name: Build Kernel
+        run: |
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
+
+          export PATH="${GITHUB_WORKSPACE}/clang/bin:$PATH"
+
+          MAKE_ARGS="\
+            ARCH=arm64 \
+            SUBARCH=arm64 \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip"
+
+          make O=out $MAKE_ARGS vendor/mojito_defconfig
+          make -j$(nproc) O=out $MAKE_ARGS
+
+      - name: Package AnyKernel3
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
+
+          sed -i 's/^device.name1=.*/device.name1=mojito/' anykernel/anykernel.sh
+          sed -i 's/^device.name2=.*/device.name2=sunny/' anykernel/anykernel.sh
+
+          sed -i 's|^BLOCK=.*|BLOCK=auto;|' anykernel/anykernel.sh
+          sed -i 's|^IS_SLOT_DEVICE=.*|IS_SLOT_DEVICE=auto;|' anykernel/anykernel.sh
+
+          cp out/arch/arm64/boot/Image.gz-dtb anykernel/
+
+          cd anykernel
+          zip -r9 ../mojito-kernel.zip \
+            * \
+            -x .git README.md _placeholder
+
+      - name: Upload Kernel Zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mojito-Kernel
+          path: mojito-kernel.zip
